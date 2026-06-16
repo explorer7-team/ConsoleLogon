@@ -108,15 +108,15 @@ private:
 	{
 		*ppOperation = nullptr;
 		ComPtr<ConsoleLogon> thisRef = this;
-		HRESULT hr = WI::MakeAsyncOperationHelper(
+		HRESULT hr = WI::MakeStagedAsyncOperation<TResult, TResultRaw>(
 			wistd::forward<THandler>(handler),
 			ppOperation,
 			BaseTrust,
-			WI::MakeOperationStagedLambda<TResult>([this, thisRef, lambda](WI::AsyncStage stage, HRESULT hr, TResult& result) -> HRESULT
+			[this, thisRef, lambda](WI::AsyncStage stage, HRESULT hr, TResult& result) -> HRESULT
 			{
 				UNREFERENCED_PARAMETER(thisRef);
 				return CancellableAsyncOperationThreadProc<TResult, TLambda>(stage, hr, result, lambda);
-			})
+			}
 		);
 		RETURN_IF_FAILED(hr); // 462
 		return S_OK;
@@ -131,15 +131,15 @@ private:
 	{
 		*ppAction = nullptr;
 		ComPtr<ConsoleLogon> thisRef = this;
-		HRESULT hr = WI::MakeAsyncActionHelper<THandler, TOptions>(
+		HRESULT hr = WI::MakeStagedAsyncAction<TOptions>(
 			wistd::forward<THandler>(handler),
 			ppAction,
 			BaseTrust,
-			WI::MakeOperationStagedLambda<WI::CNoResult>([this, thisRef, lambda](WI::AsyncStage stage, HRESULT hr, WI::CNoResult& result) -> HRESULT
+			[this, thisRef, lambda](WI::AsyncStage stage, HRESULT hr, WI::CNoResult& result) -> HRESULT
 			{
 				UNREFERENCED_PARAMETER(thisRef);
 				return CancellableAsyncOperationThreadProc<WI::CNoResult, TLambda>(stage, hr, result, lambda);
-			})
+			}
 		);
 		RETURN_IF_FAILED(hr); // 475
 		return S_OK;
@@ -437,17 +437,17 @@ HRESULT ConsoleLogon::ClearUIState(HSTRING statusMessage)
 		ComPtr<ConsoleLogon> asyncReference = this;
 		ComPtr<LogonViewManager> viewManager = m_consoleUIManager;
 		ComPtr<IAsyncAction> cleanupAction;
-		HRESULT hr = WI::MakeAsyncActionHelper<WI::ComTaskPoolHandler, AsyncCausalityOptions<StopAction>>(
+		HRESULT hr = WI::MakeAsyncAction<AsyncCausalityOptions<StopAction>>(
 			WI::ComTaskPoolHandler(WI::TaskApartment::Any, WI::TaskOptions::SyncNesting),
 			&cleanupAction,
 			BaseTrust,
-			WI::MakeOperationLambda<WI::CNoResult>([asyncReference, this, viewManager](WI::CNoResult& result) -> HRESULT
+			[asyncReference, this, viewManager](WI::CNoResult& result) -> HRESULT
 			{
 				UNREFERENCED_PARAMETER(asyncReference);
 				WI::AsyncDeferral<WI::CNoResult> deferral = result.GetDeferral(result);
 				RETURN_IF_FAILED(viewManager->Cleanup(deferral)); // 341
 				return S_OK;
-			})
+			}
 		);
 		RETURN_IF_FAILED(hr); // 341
 
@@ -529,16 +529,16 @@ HRESULT ConsoleLogon::Stop()
 		ComPtr<ConsoleLogon> asyncReference = this;
 		ComPtr<LogonViewManager> viewManager = m_consoleUIManager;
 		ComPtr<IAsyncAction> cleanupAction;
-		HRESULT hr = WI::MakeAsyncActionHelper<WI::ComTaskPoolHandler, AsyncCausalityOptions<StopAction>>(
+		HRESULT hr = WI::MakeAsyncAction<AsyncCausalityOptions<StopAction>>(
 			WI::ComTaskPoolHandler(WI::TaskApartment::Any, WI::TaskOptions::SyncNesting),
 			&cleanupAction,
 			BaseTrust,
-			WI::MakeOperationLambda<WI::CNoResult>([asyncReference, this, viewManager](WI::CNoResult& result) -> HRESULT
+			[asyncReference, this, viewManager](WI::CNoResult& result) -> HRESULT
 			{
 				UNREFERENCED_PARAMETER(asyncReference);
 				RETURN_IF_FAILED(viewManager->Cleanup(result.GetDeferral(result))); // 341
 				return S_OK;
-			})
+			}
 		);
 		RETURN_IF_FAILED(hr); // 426
 

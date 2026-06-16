@@ -1,6 +1,7 @@
 #pragma once
 
 // #define BUILD_WINDOWS
+#include <Shlwapi.h>
 #include <wrl/async.h>
 #include "GitPtr.h"
 #include "MarshaledInterface.h"
@@ -86,6 +87,16 @@ private:
 	Microsoft::WRL::ComPtr<IStream> spStream_;
 	HRESULT hr_;
 };
+
+/*template <typename TAction, typename TComplete, typename T3>
+struct BiasHelper
+{
+	static AutoStubBias<TAction, TComplete> CreateBias(
+		IRpcOptions* pRpcOptions, TAction* stubInterface, TComplete* delegateInterface)
+	{
+		return AutoStubBias(pRpcOptions, stubInterface, delegateInterface);
+	}
+};*/
 
 class CThreadRefTaker
 {
@@ -493,92 +504,134 @@ namespace Windows::Internal
 		virtual HRESULT Run(AsyncStage stage, HRESULT hr, TResult& result) = 0;
 	};
 
-	template <
-		typename TCall, // Windows::Internal::CCallAsyncStagedLambda<_lambda_6fd1045eef8a4720fd0f4574ed063cd5_ >
-		typename TResult // Windows::Internal::CMarshaledInterfaceResult<IRequestCredentialsData>
-	>
-	class COperationLambda0 final : public AsyncCallbackBase<TResult>
+	namespace type_details
 	{
-	public:
-		COperationLambda0(const typename TCall::TLambdaT& call)
-			: _call(call)
+		template <int... TIndices>
+		struct sequence
 		{
-		}
+		};
 
-		COperationLambda0(const COperationLambda0&) = default;
-		COperationLambda0(COperationLambda0&&) noexcept = default;
-
-		HRESULT Run(AsyncStage stage, HRESULT hr, TResult& result) override
+		// Custom
+		template <int N, int... TIndices>
+		struct make_sequence
+			: make_sequence<N - 1, N - 1, TIndices...>
 		{
-			return _call(stage, hr, result);
-		}
+		};
 
-	private:
-		TCall _call;
-	};
-
-	template <typename TLambda>
-	class CCallAsyncLambda
-	{
-	public:
-		using TLambdaT = TLambda;
-
-		CCallAsyncLambda(const TLambda& lambda)
-			: _lambda(lambda)
+		// Custom
+		template <int... TIndices>
+		struct make_sequence<0, TIndices...>
 		{
-		}
+			using type = sequence<TIndices...>;
+		};
 
-		CCallAsyncLambda(const CCallAsyncLambda&) = default;
-		CCallAsyncLambda(CCallAsyncLambda&&) noexcept = default;
-
-		template <typename TResult>
-		HRESULT operator()(AsyncStage stage, HRESULT hr, TResult& result)
+		template <typename T>
+		Microsoft::WRL::ComPtr<T> MakeNotAgile(Microsoft::WRL::AgileRef& ref, HRESULT& hr)
 		{
-			if (stage == AsyncStage::Execute && SUCCEEDED(hr))
+			Microsoft::WRL::ComPtr<T> result;
+			if (SUCCEEDED(hr))
 			{
-				hr = _lambda(result);
+				hr = ref.As(&result);
 			}
+			return result;
+		}
+	}
+
+	template <
+		bool TIsStaged,
+		typename TLambdaSuper, // <lambda_a1e75da4ef2c3c065ffeb9f08cddd285>
+		typename TResult, // Windows::Internal::CHSTRINGResult
+		typename... TArgs
+	>
+	class COperationLambdaVar : public AsyncCallbackBase<TResult>, TLambdaSuper
+	{
+		static HRESULT InitItems(size_t count, IUnknown** from, const IID** iids, Microsoft::WRL::AgileRef* to)
+		{
+			HRESULT hr = S_OK;
+
+			for (size_t i = 0; SUCCEEDED(hr) && i < count; ++i)
+			{
+				if (from[i])
+				{
+					hr = RoGetAgileReference(AGILEREFERENCE_DEFAULT, *iids[i], from[i], &to[i]);
+				}
+			}
+
 			return hr;
 		}
 
-	private:
-		TLambda _lambda;
-	};
+		struct StagedCall
+		{
+		};
 
-	template <typename TLambda>
-	class CCallAsyncStagedLambda
-	{
+		struct UnstagedCall
+		{
+		};
+
+		struct CallType
+		{
+		};
+
+		template <int... TIndices>
+		HRESULT UnmarshalAndCall(const AsyncStage& stage, HRESULT& hr, TResult& result, type_details::sequence<TIndices...>)
+		{
+			if constexpr (TIsStaged)
+			{
+				return TLambdaSuper::operator()(
+					stage, hr, type_details::MakeNotAgile<TArgs>(m_marshaled[TIndices], hr).Get()..., result); // Inlined SubCall
+			}
+			else
+			{
+				if (stage == AsyncStage::Execute && SUCCEEDED(hr))
+				{
+					hr = TLambdaSuper::operator()(result);
+				}
+				return hr;
+			}
+		}
+
 	public:
-		using TLambdaT = TLambda;
-
-		CCallAsyncStagedLambda(const TLambda& lambda)
-			: _lambda(lambda)
+		template <typename TLambda>
+		COperationLambdaVar(TLambda&& lambda, TArgs*... args)
+			: TLambdaSuper(wistd::forward<TLambda>(lambda))
+			, m_initResult(S_OK)
 		{
+			if constexpr (TIsStaged)
+			{
+				const IID* iids[] = { nullptr, &__uuidof(TArgs)... };
+				IUnknown* unks[] = { nullptr, args... };
+				m_initResult = InitItems(sizeof...(TArgs), unks + 1, iids + 1, m_marshaled);
+			}
+			else
+			{
+				m_initResult = S_OK;
+			}
 		}
 
-		CCallAsyncStagedLambda(const CCallAsyncStagedLambda&) = default;
-		CCallAsyncStagedLambda(CCallAsyncStagedLambda&&) noexcept = default;
+		COperationLambdaVar(const COperationLambdaVar&) = default;
+		COperationLambdaVar(COperationLambdaVar&&) noexcept = default;
 
-		template <typename TResult>
-		HRESULT operator()(AsyncStage stage, HRESULT hr, TResult& result)
+		HRESULT Run(AsyncStage stage, HRESULT hr, TResult& result) override
 		{
-			return _lambda(stage, hr, result);
+			if (SUCCEEDED(hr))
+			{
+				hr = m_initResult;
+			}
+			return UnmarshalAndCall(stage, hr, result, type_details::make_sequence<sizeof...(TArgs)>::type());
 		}
+
+		void operator=(const COperationLambdaVar&) = delete;
 
 	private:
-		TLambda _lambda;
+		HRESULT m_initResult;
+		Microsoft::WRL::AgileRef m_marshaled[1 + sizeof...(TArgs)];
 	};
 
-	template <typename TResult, typename TLambda>
-	COperationLambda0<CCallAsyncLambda<TLambda>, TResult>* MakeOperationLambda(const TLambda& lambda)
+	template <bool TIsStaged, typename TLambda, typename TResult, typename... TArgs>
+	COperationLambdaVar<TIsStaged, TLambda, TResult, TArgs...>* MakeOpLambda(TLambda&& lambda, TArgs*... args)
 	{
-		return new(std::nothrow) COperationLambda0<CCallAsyncLambda<TLambda>, TResult>(lambda);
-	}
-
-	template <typename TResult, typename TLambda>
-	COperationLambda0<CCallAsyncStagedLambda<TLambda>, TResult>* MakeOperationStagedLambda(const TLambda& lambda)
-	{
-		return new(std::nothrow) COperationLambda0<CCallAsyncStagedLambda<TLambda>, TResult>(lambda);
+		return new(std::nothrow) COperationLambdaVar<TIsStaged, TLambda, TResult, TArgs...>(
+			wistd::forward<TLambda>(lambda), args...);
 	}
 
 	MIDL_INTERFACE("2fafaaf9-2986-48ee-919d-98f66edf0a31")
@@ -1321,12 +1374,12 @@ namespace Windows::Internal
 	};
 
 	template <
-		typename TOperation, // IAsyncOperation<RequestCredentialsData*>
-		typename TComplete, // IAsyncOperationCompletedHandler<RequestCredentialsData*>
-		typename TProgressDelegate, // INilDelegate
-		typename TResult, // CMarshaledInterfaceResult<Windows::Internal::UI::Logon::Controller::IRequestCredentialsData>
-		typename TAsyncHandler, // ComTaskPoolHandler
-		typename TAsyncBaseOptions // AsyncOptions<PropagateErrorWithWin8Quirk, nullptr, GUID_CAUSALITY_WINDOWS_PLATFORM_ID, Diagnostics::CausalitySource_System>
+		typename TOperation,
+		typename TComplete,
+		typename TProgressDelegate,
+		typename TResult,
+		typename TAsyncHandler,
+		typename TAsyncBaseOptions
 	>
 	HRESULT MakeAsyncHelper(
 		TOperation** ppOperation,
@@ -1359,12 +1412,13 @@ namespace Windows::Internal
 	}
 
 	template <
-		typename TAsyncHandler, // ComTaskPoolHandler
-		typename TAsyncBaseOptions // AsyncCausalityOptions<...>
+		typename TAsyncHandler,
+		typename TAsyncBaseOptions
 	>
 	HRESULT MakeAsyncActionHelper(
 		TAsyncHandler&& handler,
 		ABI::Windows::Foundation::IAsyncAction** ppAction,
+		const WCHAR* const pszRuntimeName,
 		TrustLevel trustLevel,
 		AsyncCallbackBase<CNoResult>* pCallback)
 	{
@@ -1378,6 +1432,25 @@ namespace Windows::Internal
 		>(
 			ppAction,
 			wistd::forward<TAsyncHandler>(handler),
+			pszRuntimeName,
+			trustLevel,
+			pCallback
+		);
+	}
+
+	template <
+		typename TAsyncHandler,
+		typename TAsyncBaseOptions
+	>
+	HRESULT MakeAsyncActionHelper(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncAction** ppAction,
+		TrustLevel trustLevel,
+		AsyncCallbackBase<CNoResult>* pCallback)
+	{
+		return MakeAsyncActionHelper<TAsyncHandler, TAsyncBaseOptions>(
+			wistd::forward<TAsyncHandler>(handler),
+			ppAction,
 			L"Windows.Foundation.IAsyncAction",
 			trustLevel,
 			pCallback
@@ -1385,13 +1458,46 @@ namespace Windows::Internal
 	}
 
 	template <
-		typename TResult, // CMarshaledInterfaceResult<Windows::Internal::UI::Logon::Controller::IMessageDisplayResult>
-		typename TResultRaw, // Windows::Internal::UI::Logon::Controller::MessageDisplayResult*
-		typename TAsyncHandler // ComTaskPoolHandler
+		typename TAsyncBaseOptions,
+		typename TAsyncHandler,
+		typename TLambda
+	>
+	HRESULT MakeAsyncAction(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncAction** ppAction,
+		TrustLevel trustLevel,
+		TLambda&& lambda)
+	{
+		return MakeAsyncActionHelper<TAsyncHandler, TAsyncBaseOptions>(
+			wistd::forward<TAsyncHandler>(handler), ppAction, trustLevel,
+			MakeOpLambda<false, TLambda, CNoResult>(wistd::forward<TLambda>(lambda)));
+	}
+
+	template <
+		typename TAsyncBaseOptions,
+		typename TAsyncHandler,
+		typename TLambda
+	>
+	HRESULT MakeStagedAsyncAction(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncAction** ppAction,
+		TrustLevel trustLevel,
+		TLambda&& lambda)
+	{
+		return MakeAsyncActionHelper<TAsyncHandler, TAsyncBaseOptions>(
+			wistd::forward<TAsyncHandler>(handler), ppAction, trustLevel,
+			MakeOpLambda<true, TLambda, CNoResult>(wistd::forward<TLambda>(lambda)));
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler
 	>
 	HRESULT MakeAsyncOperationHelper(
 		TAsyncHandler&& handler,
 		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		const WCHAR* const pszRuntimeName,
 		TrustLevel trustLevel,
 		AsyncCallbackBase<TResult>* pCallback)
 	{
@@ -1405,9 +1511,126 @@ namespace Windows::Internal
 		>(
 			ppOperation,
 			wistd::forward<TAsyncHandler>(handler),
+			pszRuntimeName,
+			trustLevel,
+			pCallback
+		);
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler
+	>
+	HRESULT MakeAsyncOperationHelper(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		TrustLevel trustLevel,
+		AsyncCallbackBase<TResult>* pCallback)
+	{
+		return MakeAsyncOperationHelper<TResult, TResultRaw>(
+			wistd::forward<TAsyncHandler>(handler),
+			ppOperation,
 			ABI::Windows::Foundation::IAsyncOperation<TResultRaw>::z_get_rc_name_impl(),
 			trustLevel,
 			pCallback
 		);
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler,
+		typename TLambda
+	>
+	HRESULT MakeAsyncOperation(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		TrustLevel trustLevel,
+		TLambda&& lambda)
+	{
+		return MakeAsyncOperationHelper<TResult, TResultRaw>(
+			wistd::forward<TAsyncHandler>(handler), ppOperation, trustLevel,
+			MakeOpLambda<false, TLambda, TResult>(wistd::forward<TLambda>(lambda)));
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler,
+		typename TLambda
+	>
+	HRESULT MakeStagedAsyncOperation(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		TrustLevel trustLevel,
+		TLambda&& lambda)
+	{
+		return MakeAsyncOperationHelper<TResult, TResultRaw>(
+			wistd::forward<TAsyncHandler>(handler), ppOperation, trustLevel,
+			MakeOpLambda<true, TLambda, TResult>(wistd::forward<TLambda>(lambda)));
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler,
+		typename TMarshal1,
+		typename TLambda
+	>
+	HRESULT MakeStagedAsyncOperation(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		TrustLevel trustLevel,
+		TMarshal1* pMarshal1,
+		TLambda&& lambda)
+	{
+		return MakeAsyncOperationHelper<TResult, TResultRaw>(
+			wistd::forward<TAsyncHandler>(handler), ppOperation, trustLevel,
+			MakeOpLambda<true, TLambda, TResult>(wistd::forward<TLambda>(lambda), pMarshal1));
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler,
+		typename TMarshal1,
+		typename TMarshal2,
+		typename TLambda
+	>
+	HRESULT MakeStagedAsyncOperation(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		TrustLevel trustLevel,
+		TMarshal1* pMarshal1,
+		TMarshal2* pMarshal2,
+		TLambda&& lambda)
+	{
+		return MakeAsyncOperationHelper<TResult, TResultRaw>(
+			wistd::forward<TAsyncHandler>(handler), ppOperation, trustLevel,
+			MakeOpLambda<true, TLambda, TResult>(wistd::forward<TLambda>(lambda), pMarshal1, pMarshal2));
+	}
+
+	template <
+		typename TResult,
+		typename TResultRaw,
+		typename TAsyncHandler,
+		typename TMarshal1,
+		typename TMarshal2,
+		typename TMarshal3,
+		typename TLambda
+	>
+	HRESULT MakeStagedAsyncOperation(
+		TAsyncHandler&& handler,
+		ABI::Windows::Foundation::IAsyncOperation<TResultRaw>** ppOperation,
+		TrustLevel trustLevel,
+		TMarshal1* pMarshal1,
+		TMarshal2* pMarshal2,
+		TMarshal3* pMarshal3,
+		TLambda&& lambda)
+	{
+		return MakeAsyncOperationHelper<TResult, TResultRaw>(
+			wistd::forward<TAsyncHandler>(handler), ppOperation, trustLevel,
+			MakeOpLambda<true, TLambda, TResult>(wistd::forward<TLambda>(lambda), pMarshal1, pMarshal2, pMarshal3));
 	}
 }
